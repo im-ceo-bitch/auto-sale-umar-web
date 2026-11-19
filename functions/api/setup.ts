@@ -63,7 +63,7 @@ export async function onRequestPost(context: { request: Request; env: Env }): Pr
   const now = new Date().toISOString();
 
   try {
-    await env.DB.prepare(
+    const created = await env.DB.prepare(
       `INSERT INTO users (
         email,
         password_hash,
@@ -75,10 +75,11 @@ export async function onRequestPost(context: { request: Request; env: Env }): Pr
         created_at,
         updated_at,
         last_login_at
-      ) VALUES (?1, ?2, ?3, NULL, 'super_admin', 'active', NULL, ?4, ?4, NULL)`,
+      ) SELECT ?1, ?2, ?3, NULL, 'super_admin', 'active', NULL, ?4, ?4, NULL WHERE NOT EXISTS (SELECT 1 FROM users) RETURNING id`,
     )
       .bind(email, passwordHash, fullName, now)
-      .run();
+      .first<{ id: number }>();
+    if (!created) return json({success:false,error:"Первичная регистрация уже закрыта."},409);
   } catch (error) {
     console.error("Super-admin setup failed", error);
     return json({ success: false, error: "Не удалось создать супер-администратора." }, 500);

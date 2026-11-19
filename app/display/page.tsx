@@ -6,7 +6,7 @@ import styles from "./display.module.css";
 
 type CarStatus = "in_stock" | "in_showroom" | "in_transit" | "made_to_order" | "reserved" | "sold" | "hidden";
 type Currency = "USD" | "UZS" | "EUR";
-type DisplayPhase = "loading" | "intro" | "welcome" | "catalog";
+type DisplayPhase = "loading" | "brand" | "intro" | "welcome" | "catalog";
 type SceneMode = "dark" | "light";
 
 interface CatalogPhoto {
@@ -78,7 +78,7 @@ const CATALOG_REFRESH_MS = 5 * 60_000;
 const DISPLAY_CACHE_TTL_MS = 30 * 60_000;
 const INTRO_FALLBACK_MS = 9_000;
 const WELCOME_DURATION_MS = 5_200;
-const DISPLAY_CACHE_KEY = "asu:display:catalog:v2";
+const DISPLAY_CACHE_KEY = "asu:display:catalog:clean-v3";
 
 const STATUS_LABELS: Record<CarStatus, string> = {
   in_stock: "В НАЛИЧИИ",
@@ -262,6 +262,7 @@ export default function DisplayPage() {
   const [index, setIndex] = useState(0);
   const [time, setTime] = useState(() => new Date());
   const [error, setError] = useState(false);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
   const [phase, setPhase] = useState<DisplayPhase>("loading");
   const [sceneMode, setSceneMode] = useState<SceneMode>("light");
   const [forcedSceneMode, setForcedSceneMode] = useState<SceneMode | null>(null);
@@ -277,6 +278,35 @@ export default function DisplayPage() {
   const warmedAssetsRef = useRef<Set<string>>(new Set());
   const catalogSignatureRef = useRef<string>("");
   const loadingStartedAtRef = useRef<number>(Date.now());
+
+  useEffect(() => {
+    type Lock = { released: boolean; release(): Promise<void> };
+    const wake = (navigator as Navigator & {wakeLock?: {request(type: "screen"): Promise<Lock>}}).wakeLock;
+    if (!wake) return;
+    let lock: Lock | null = null;
+    let pending = false;
+    let stopped = false;
+    const acquire = async () => {
+      if (stopped || pending || document.visibilityState !== "visible" || (lock && !lock.released)) return;
+      pending = true;
+      try {
+        const next = await wake.request("screen");
+        if (stopped) await next.release(); else lock = next;
+      } catch { /* Samsung browser may decline the API. */ }
+      finally { pending = false; }
+    };
+    void acquire();
+    const retry = window.setInterval(acquire, 30000);
+    document.addEventListener("visibilitychange", acquire);
+    document.addEventListener("pointerdown", acquire);
+    return () => {
+      stopped = true;
+      window.clearInterval(retry);
+      document.removeEventListener("visibilitychange", acquire);
+      document.removeEventListener("pointerdown", acquire);
+      if (lock && !lock.released) void lock.release().catch(() => {});
+    };
+  }, []);
 
   useEffect(() => {
     currentSlugRef.current = cars[index]?.slug ?? null;
@@ -360,7 +390,7 @@ export default function DisplayPage() {
       pendingIndexRef.current = clampIndex(targetIndex, cars.length);
       setSceneMode(nextMode);
       setIntroCycle((current) => current + 1);
-      setPhase(nextMode === "light" ? "welcome" : "intro");
+      setPhase("brand");
     },
     [cars.length],
   );
@@ -412,6 +442,7 @@ export default function DisplayPage() {
       const nextCars = active.length > 0 ? active : payload.cars.filter((car) => car.status !== "hidden");
 
       applyCars(nextCars);
+      setCatalogLoaded(true);
       setError(false);
     } catch (catalogError) {
       console.error("Showroom display catalog failed", catalogError);
@@ -506,8 +537,14 @@ export default function DisplayPage() {
   }, [cars.length, forcedSceneMode, index, modeReady, phase, startSequence]);
 
   useEffect(() => {
+    if (phase !== "brand") return;
+    const timer = window.setTimeout(() => setPhase("intro"), 3000);
+    return () => window.clearTimeout(timer);
+  }, [phase, introCycle]);
+
+  useEffect(() => {
     if (phase !== "intro") return;
-    const introDuration = sceneMode === "dark" ? INTRO_FALLBACK_MS : 2_300;
+    const introDuration = INTRO_FALLBACK_MS;
     const fallback = window.setTimeout(() => finishIntro(), introDuration);
     return () => window.clearTimeout(fallback);
   }, [finishIntro, introCycle, phase, sceneMode]);
@@ -575,107 +612,28 @@ export default function DisplayPage() {
       {fullscreenHint ? <div className={styles.fullscreenNotice}>{fullscreenHint}</div> : null}
 
       <AnimatePresence initial={false} mode="wait">
-        {phase === "intro" ? (
-          sceneMode === "dark" ? (
-            <motion.section
-              key={`intro-${sceneMode}-${introCycle}`}
-              className={styles.introScene}
-              initial={{ opacity: 0, scale: 1.004 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.998 }}
-              transition={{ duration: 1.45, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <video
-                key={`intro-video-${introCycle}`}
-                className={styles.introVideo}
-                autoPlay
-                muted
-                playsInline
-                preload="auto"
-                poster="/intro-poster.jpg"
-                onEnded={finishIntro}
-              >
-                <source src="/intro.mp4" type="video/mp4" />
-              </video>
-              <div className={styles.introVeil} aria-hidden="true" />
-              <div className={styles.introBrand}>
-                <img src="/brand/asu-wordmark-white.png" alt="Auto Sale Umar" />
-                <span>SHOWROOM DISPLAY</span>
-                <strong>PREMIUM COLLECTION</strong>
-              </div>
-            </motion.section>
-          ) : (
-            <motion.section
-              key={`intro-${sceneMode}-${introCycle}`}
-              className={styles.lightIntroScene}
-              initial={{ opacity: 0, scale: 1.004 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.998 }}
-              transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles.lightIntroBrand}>
-                <span>SHOWROOM DISPLAY</span>
-              </div>
-            </motion.section>
-          )
+        {phase === "brand" ? (
+          <motion.section key={`brand-${introCycle}`} className={styles.brandRevealStage}
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.65 }}>
+            <motion.img src="/brand/asu-wordmark-white.png" alt="Auto Sale Umar"
+              initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 1.35 }} />
+          </motion.section>
+        ) : phase === "intro" ? (
+          <motion.section key={`intro-${introCycle}`} className={styles.brandRevealStage}
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.65 }}>
+            <video className={styles.silhouetteRevealVideo} autoPlay muted playsInline preload="auto"
+              poster="/intro-poster.jpg" onEnded={finishIntro} onError={finishIntro}>
+              <source src="/intro.mp4" type="video/mp4" />
+            </video>
+          </motion.section>
         ) : phase === "welcome" ? (
-          sceneMode === "dark" ? (
-            <motion.section
-              key={`welcome-${sceneMode}-${introCycle}`}
-              className={styles.welcomeScene}
-              initial={{ opacity: 1 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 1 }}
-            >
-              <div className={styles.welcomeShade} aria-hidden="true" />
-              <div className={styles.welcomeBlackout} aria-hidden="true" />
-
-              <motion.div
-                className={styles.welcomeRu}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.92, duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
-              >
-                <span>ДОБРО ПОЖАЛОВАТЬ</span>
-                <strong>В ШОУРУМ</strong>
-              </motion.div>
-
-              <motion.img
-                className={styles.welcomeLogo}
-                src="/brand/asu-wordmark-white.png"
-                alt="Auto Sale Umar"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 0.96 }}
-                transition={{ delay: 1.22, duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
-              />
-            </motion.section>
-          ) : (
-            <motion.section
-              key={`welcome-${sceneMode}-${introCycle}`}
-              className={styles.lightWelcomeScene}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1, transition: { duration: 0.92, ease: [0.22, 1, 0.36, 1] } }}
-              exit={{ opacity: 0, transition: { duration: 0.82, ease: [0.4, 0, 0.2, 1] } }}
-            >
-              <motion.div
-                className={styles.lightWelcomeCopy}
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.24, duration: 0.72, ease: [0.22, 1, 0.36, 1] }}
-              >
-                <span>ДОБРО ПОЖАЛОВАТЬ</span>
-                <strong>В ШОУРУМ</strong>
-                <motion.img
-                  className={styles.lightWelcomeLogo}
-                  src="/brand/asu-wordmark-black.png"
-                  alt="Auto Sale Umar"
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.46, duration: 0.72, ease: [0.22, 1, 0.36, 1] }}
-                />
-              </motion.div>
-            </motion.section>
-          )
+          <motion.section key={`welcome-${introCycle}`} className={styles.welcomeRevealStage}
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.7 }}>
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.85 }}>
+              <span>ДОБРО ПОЖАЛОВАТЬ</span><strong>В ШОУРУМ</strong>
+            </motion.div>
+            <motion.img src="/brand/asu-wordmark-white.png" alt="Auto Sale Umar" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6, duration: 0.8 }} />
+          </motion.section>
         ) : phase === "loading" || !car ? (
           <motion.section
             key="loading"
@@ -684,9 +642,9 @@ export default function DisplayPage() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0, transition: { duration: 0.88, ease: [0.4, 0, 0.2, 1] } }}
           >
-            <div className={styles.loadingSpinner} aria-hidden="true" />
+            {!catalogLoaded || error ? <div className={styles.loadingSpinner} aria-hidden="true" /> : null}
             <div className={styles.loadingCopyLight}>
-              <strong>{error ? "ОБНОВЛЯЕМ КОЛЛЕКЦИЮ" : "ЗАГРУЖАЕМ КОЛЛЕКЦИЮ"}</strong>
+              <strong>{error ? "ОБНОВЛЯЕМ КОЛЛЕКЦИЮ" : catalogLoaded ? "КОЛЛЕКЦИЯ СКОРО ПОЯВИТСЯ" : "ЗАГРУЖАЕМ КОЛЛЕКЦИЮ"}</strong>
             </div>
           </motion.section>
         ) : sceneMode === "dark" ? (

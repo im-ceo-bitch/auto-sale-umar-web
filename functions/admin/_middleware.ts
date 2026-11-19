@@ -2,9 +2,7 @@ import { getAuthenticatedUser, type Env } from "../_lib/auth";
 
 function privateRedirect(url: URL, pathname: string): Response {
   const target = new URL(pathname, url.origin);
-  const response = Response.redirect(target.toString(), 302);
-  response.headers.set("cache-control", "no-store, private");
-  return response;
+  return new Response(null, { status: 302, headers: { location: target.toString(), "cache-control": "no-store, private" } });
 }
 
 export async function onRequest(context: {
@@ -14,7 +12,7 @@ export async function onRequest(context: {
 }): Promise<Response> {
   const url = new URL(context.request.url);
 
-  if (url.pathname === "/admin/login" || url.pathname === "/admin/login/") {
+  if (url.pathname === "/admin/login" || url.pathname === "/admin/login/" || url.pathname === "/admin/setup" || url.pathname === "/admin/setup/") {
     return context.next();
   }
 
@@ -35,6 +33,7 @@ export async function onRequest(context: {
   }
 
   const response = await context.next();
-  response.headers.set("cache-control", "no-store, private");
-  return response;
+  const headers = new Headers(response.headers);
+  headers.set("cache-control", "no-store, private");
+  return new Response(response.body, {status: response.status, headers});
 }

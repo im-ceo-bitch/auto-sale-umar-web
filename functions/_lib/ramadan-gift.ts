@@ -230,7 +230,7 @@ export async function loadRamadanGift(env: Env, options?: { includeInactive?: bo
     LIMIT 1
   `).first<RamadanGiftRow>();
 
-  if (!row) return getFallbackRamadanGift();
+  if (!row) return { ...getFallbackRamadanGift(), isActive: false, media: [] };
 
   const media = await statement(env, `
     SELECT id, public_url, photo_group, sort_order, is_cover
@@ -240,10 +240,6 @@ export async function loadRamadanGift(env: Env, options?: { includeInactive?: bo
   `).bind(row.id).all<RamadanGiftMediaRow>();
 
   const payload = rowToPayload(row, Array.isArray(media.results) ? media.results : []);
-  if (payload.media.length === 0) {
-    const fallback = getFallbackRamadanGift();
-    payload.media = fallback.media;
-  }
   return payload;
 }
 
