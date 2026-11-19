@@ -1,4 +1,4 @@
-name: AutoSale ZIP Patch Installer
+name: Showroom · ZIP & Deploy
 
 on:
   push:
@@ -6,9 +6,11 @@ on:
       - main
     paths:
       - 'patch-*.zip'
+      - '.github/workflows/apply-zip-patch.yml'
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: autosale-zip-patch-installer
@@ -16,9 +18,14 @@ concurrency:
 
 jobs:
   apply-patch:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    outputs:
+      commit_sha: ${{ steps.verified.outputs.sha }}
     name: Verify and apply ZIP patch
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout uploaded patch commit
@@ -34,6 +41,12 @@ jobs:
 
           mapfile -t ALL_CHANGED < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
           mapfile -t PATCHES < <(printf '%s\n' "${ALL_CHANGED[@]}" | grep -E '^patch-[A-Za-z0-9._-]+\.zip$' || true)
+
+          # Installing/updating this workflow itself also deploys the current main.
+          if [ "${#PATCHES[@]}" -eq 0 ] && [ "${#ALL_CHANGED[@]}" -eq 1 ] && [ "${ALL_CHANGED[0]}" = '.github/workflows/apply-zip-patch.yml' ]; then
+            echo "Workflow updated; deploy current main without a ZIP."
+            exit 0
+          fi
 
           if [ "${#PATCHES[@]}" -ne 1 ]; then
             echo "Exactly one root-level patch-*.zip must be uploaded in a patch commit."
@@ -53,6 +66,7 @@ jobs:
           echo "Patch detected: $PATCH_ZIP"
 
       - name: Validate ZIP and apply paths safely
+        if: ${{ steps.detect.outputs.zip != '' }}
         id: apply
         shell: bash
         env:
@@ -258,21 +272,26 @@ jobs:
           echo "ZIP paths validated and applied to temporary working tree."
 
       - name: Setup Node.js
+        if: ${{ steps.detect.outputs.zip != '' }}
         uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
 
       - name: Install exact dependencies
+        if: ${{ steps.detect.outputs.zip != '' }}
         run: npm ci
 
       - name: TypeScript check
+        if: ${{ steps.detect.outputs.zip != '' }}
         run: npm run typecheck
 
       - name: Production build
+        if: ${{ steps.detect.outputs.zip != '' }}
         run: npm run build
 
       - name: Remove generated build artifacts before commit
+        if: ${{ steps.detect.outputs.zip != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -284,6 +303,7 @@ jobs:
           echo "Generated build artifacts removed from working tree."
 
       - name: Commit only verified patch files
+        if: ${{ steps.detect.outputs.zip != '' }}
         shell: bash
         env:
           PATCH_ZIP: ${{ steps.detect.outputs.zip }}
@@ -364,6 +384,11 @@ jobs:
           git commit -m "$MSG"
           git push origin HEAD:main
 
+      - name: Export verified commit
+        id: verified
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Remove rejected ZIP from main
         if: ${{ failure() && steps.detect.outputs.zip != '' }}
         shell: bash
@@ -392,3 +417,179 @@ jobs:
           fi
 
           echo "Rejected patch was not applied to source files."
+
+  deploy:
+    name: Deploy unified Showroom Backend
+    needs: apply-patch
+    if: ${{ always() && !cancelled() && github.ref == 'refs/heads/main' && (needs.apply-patch.result == 'success' || (github.event_name == 'workflow_dispatch' && needs.apply-patch.result == 'skipped')) }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      AUTH_PEPPER: ${{ secrets.AUTH_PEPPER }}
+      SETUP_KEY: ${{ secrets.SETUP_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.apply-patch.outputs.commit_sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Validate deployment configuration
+        run: |
+          set -euo pipefail
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-fA-F0-9]{32}$ ]] || { echo 'Missing or invalid CLOUDFLARE_ACCOUNT_ID'; exit 1; }
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo 'Missing CLOUDFLARE_API_TOKEN'; exit 1; }
+          test ${#AUTH_PEPPER} -ge 32 && test ${#SETUP_KEY} -ge 32 || { echo 'Set AUTH_PEPPER and SETUP_KEY (at least 32 characters each)'; exit 1; }
+          test "$AUTH_PEPPER" != "$SETUP_KEY" || { echo 'Use two different secrets'; exit 1; }
+          test -f backend/worker.ts && test -f scripts/configure-worker.mjs && test -f migrations/0001_clean_baseline.sql || { echo 'Install the unified backend ZIP first'; exit 1; }
+      - run: npm ci
+      - run: npm run build
+      - name: Discover or provision Cloudflare resources
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, re, urllib.request, urllib.error, urllib.parse
+          account = os.environ['CLOUDFLARE_ACCOUNT_ID']
+          token = os.environ['CLOUDFLARE_API_TOKEN']
+          root = '/accounts/' + account
+          base = 'https://api.cloudflare.com/client/v4'
+          worker = 'autosaleumar-backend'
+          dbname = 'autosaleumar-db'
+          bucket = 'autosaleumar-media'
+          expected = {'autosaleumar.com', 'www.autosaleumar.com', 'api.autosaleumar.com', 'display.autosaleumar.com'}
+          def cf(path, method='GET', body=None, query=None):
+              url = base + path + (('?' + urllib.parse.urlencode(query)) if query else '')
+              req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None,
+                  headers={'Authorization':'Bearer '+token, 'Content-Type':'application/json'}, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=45) as res:
+                      obj = json.load(res)
+              except urllib.error.HTTPError as exc:
+                  try: errors = json.loads(exc.read()).get('errors', [])
+                  except Exception: errors = []
+                  raise SystemExit(f'{method} {path}: HTTP {exc.code}; {errors}')
+              if not obj.get('success'):
+                  raise SystemExit(f'{method} {path}: {obj.get("errors", [])}')
+              return obj
+          sub = cf(root+'/workers/subdomain')['result']['subdomain']
+          if not re.fullmatch(r'[a-z0-9-]+', sub or ''):
+              raise SystemExit('Configure an account workers.dev subdomain before deploying.')
+          # Preserve existing production domains on ordinary re-deploys.
+          current = set()
+          page = 1
+          while True:
+              r = cf(root+'/workers/domains', query={'service':worker,'page':page,'per_page':100})
+              current.update(x['hostname'] for x in r['result'] if x.get('service') == worker)
+              if page >= (r.get('result_info') or {}).get('total_pages', 1): break
+              page += 1
+          if current - expected:
+              raise SystemExit('Unexpected custom domains on target Worker; refusing to alter routing.')
+          zones = cf('/zones', query={'name':'autosaleumar.com','account.id':account})['result']
+          active = any(z.get('name')=='autosaleumar.com' and z.get('status')=='active' and z.get('account',{}).get('id')==account for z in zones)
+          if current and not active:
+              raise SystemExit('Existing production routes found but zone is not active; refusing to alter routing.')
+          # Deploy and verify preview before attaching new domains. Preserve existing routes.
+          attach = bool(current)
+          attach_after_verify = active and not current
+          print('Domain:', 'active' if active else 'pending or absent; preview only')
+          # Exact resource names only; never copy, delete, or reset data.
+          matches = []
+          page = 1
+          while True:
+              r = cf(root+'/d1/database', query={'name':dbname,'page':page,'per_page':100})
+              matches.extend(x for x in r['result'] if x.get('name')==dbname)
+              info = r.get('result_info') or {}
+              if len(r['result']) < 100 or page*100 >= info.get('total_count', float('inf')): break
+              page += 1
+          if len(matches)>1: raise SystemExit('Multiple matching D1 databases; refusing ambiguous target.')
+          db = matches[0] if matches else cf(root+'/d1/database','POST',{'name':dbname})['result']
+          dbid = db['uuid']
+          assert db['name']==dbname and re.fullmatch(r'[0-9a-fA-F-]{36}', dbid)
+          print('D1:', 'reused' if matches else 'created', dbname)
+          # Filter + cursor pagination; do not treat API failures as missing buckets.
+          found = False
+          cursor = None
+          while True:
+              q = {'name_contains':bucket,'per_page':100}
+              if cursor: q['cursor'] = cursor
+              r = cf(root+'/r2/buckets', query=q)
+              if any(x['name']==bucket for x in r['result']['buckets']):
+                  found = True; break
+              cursor = (r.get('result_info') or {}).get('cursor')
+              if not cursor: break
+          if not found:
+              created = cf(root+'/r2/buckets','POST',{'name':bucket})['result']
+              assert created['name']==bucket
+          print('R2:', 'reused' if found else 'created', bucket)
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write(f'ASU_D1_DATABASE_ID={dbid}\nASU_ATTACH_DOMAINS={str(attach).lower()}\nASU_ATTACH_AFTER_VERIFY={str(attach_after_verify).lower()}\nASU_PREVIEW_URL=https://{worker}.{sub}.workers.dev\n')
+          PY
+      - name: Generate configuration and apply schema
+        run: |
+          set -euo pipefail
+          node scripts/configure-worker.mjs
+          npx --yes wrangler@4 d1 migrations apply autosaleumar-db --remote --config wrangler.generated.json
+      - name: Deploy unified Worker, assets and secrets
+        run: |
+          set -euo pipefail
+          umask 077
+          secret_file="$RUNNER_TEMP/asu-secrets.json"
+          trap 'rm -f "$secret_file"' EXIT
+          python - <<'PY' > "$secret_file"
+          import json, os
+          print(json.dumps({k:os.environ[k] for k in ['AUTH_PEPPER','SETUP_KEY','GEMINI_API_KEY'] if os.environ.get(k)}))
+          PY
+          npx --yes wrangler@4 deploy --config wrangler.generated.json --secrets-file "$secret_file"
+      - name: Verify preview backend, catalog and website
+        run: |
+          set -euo pipefail
+          verify() {
+            curl --retry 6 --retry-all-errors --retry-delay 5 --max-time 30 -fsS "$1/v1/health" | python -c 'import json,sys; assert json.load(sys.stdin)["success"] is True'
+            curl --retry 6 --retry-all-errors --retry-delay 5 --max-time 30 -fsS "$1/v1/cars" | python -c 'import json,sys; x=json.load(sys.stdin); assert x["success"] and isinstance(x["cars"],list); print("Catalog count:",len(x["cars"]))'
+          }
+          verify "$ASU_PREVIEW_URL"
+          curl --retry 6 --retry-all-errors --retry-delay 5 --max-time 30 -fsS "$ASU_PREVIEW_URL/api/catalog" | python -c 'import json,sys; x=json.load(sys.stdin); assert x["success"] and isinstance(x["cars"],list)'
+          curl -fsSL --max-time 30 "$ASU_PREVIEW_URL/display/" -o /dev/null
+      - name: Attach active production domains after preview verification
+        if: ${{ env.ASU_ATTACH_AFTER_VERIFY == 'true' }}
+        env:
+          ASU_ATTACH_DOMAINS: 'true'
+        run: |
+          set -euo pipefail
+          node scripts/configure-worker.mjs
+          umask 077
+          secret_file="$RUNNER_TEMP/asu-secrets.json"
+          trap 'rm -f "$secret_file"' EXIT
+          python - <<'PY' > "$secret_file"
+          import json, os
+          print(json.dumps({k:os.environ[k] for k in ['AUTH_PEPPER','SETUP_KEY','GEMINI_API_KEY'] if os.environ.get(k)}))
+          PY
+          npx --yes wrangler@4 deploy --config wrangler.generated.json --secrets-file "$secret_file"
+          echo "ASU_ATTACH_DOMAINS=true" >> "$GITHUB_ENV"
+      - name: Verify production and publish deployment summary
+        run: |
+          set -euo pipefail
+          verify() {
+            curl --retry 6 --retry-all-errors --retry-delay 5 --max-time 30 -fsS "$1/v1/health" | python -c 'import json,sys; assert json.load(sys.stdin)["success"] is True'
+            curl --retry 6 --retry-all-errors --retry-delay 5 --max-time 30 -fsS "$1/v1/cars" | python -c 'import json,sys; x=json.load(sys.stdin); assert x["success"] and isinstance(x["cars"],list); print("Catalog count:",len(x["cars"]))'
+          }
+          if [[ "$ASU_ATTACH_DOMAINS" == true ]]; then
+            verify https://api.autosaleumar.com
+            curl -fsSL --retry 6 --retry-all-errors --retry-delay 5 --max-time 30 https://autosaleumar.com/ -o /dev/null
+            curl -fsSL --retry 6 --retry-all-errors --retry-delay 5 --max-time 30 https://display.autosaleumar.com/ -o /dev/null
+          fi
+          {
+            echo '## Showroom Backend deployed'
+            echo "- Preview: $ASU_PREVIEW_URL"
+            echo "- First administrator: $ASU_PREVIEW_URL/admin/setup/"
+            echo "- TV: $ASU_PREVIEW_URL/display/"
+            echo "- Production domains: $ASU_ATTACH_DOMAINS"
+            if [[ "$ASU_ATTACH_DOMAINS" != true ]]; then echo '- After nameservers become active, upload the next ZIP or run this workflow once manually.'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
