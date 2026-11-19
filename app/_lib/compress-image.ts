@@ -14,7 +14,7 @@ interface ImageCompressionOptions {
 const DEFAULT_MAX_DIMENSION = 3840;
 const DEFAULT_QUALITY = 0.9;
 const DEFAULT_MINIMUM_SAVINGS_RATIO = 0.97;
-const SKIP_TYPES = new Set(["image/gif", "image/svg+xml"]);
+const SKIP_TYPES = new Set(["image/gif", "image/svg+xml", "image/png"]);
 
 type DrawableImage = ImageBitmap | HTMLImageElement;
 

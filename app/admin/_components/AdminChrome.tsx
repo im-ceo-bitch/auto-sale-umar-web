@@ -7,7 +7,7 @@ import styles from "./admin-chrome.module.css";
 export type AdminLanguage = "ru" | "uz";
 export type AdminTheme = "light" | "dark";
 export type AdminRole = "super_admin" | "admin" | "sales_manager" | null;
-export type AdminSection = "staff" | "cars" | "brands" | "home" | "visits" | "requests" | "ramadan";
+export type AdminSection = "staff" | "cars" | "brands" | "home" | "visits" | "requests" | "ramadan" | "display";
 
 interface AdminChromeProps {
   current: AdminSection;
@@ -28,6 +28,7 @@ const LABELS = {
     visits: "Визиты",
     requests: "Запросы",
     ramadan: "Ramadan Gift",
+    display: "Showroom Remote",
     settings: "Настройки",
     appearance: "Оформление",
     language: "Язык",
@@ -45,6 +46,7 @@ const LABELS = {
     visits: "Tashriflar",
     requests: "So‘rovlar",
     ramadan: "Ramadan Gift",
+    display: "Showroom Remote",
     settings: "Sozlamalar",
     appearance: "Ko‘rinish",
     language: "Til",
@@ -63,6 +65,7 @@ const NAV: Array<{ id: AdminSection; href: string }> = [
   { id: "home", href: "/admin/home/" },
   { id: "visits", href: "/admin/visits/" },
   { id: "requests", href: "/admin/requests/" },
+  { id: "display", href: "/admin/display/" },
   { id: "ramadan", href: "/admin/ramadan-gift/" },
 ];
 
@@ -79,7 +82,7 @@ export default function AdminChrome({
   const navRef = useRef<HTMLElement | null>(null);
   const copy = LABELS[language];
   const manager = role === "sales_manager";
-  const visibleNav = NAV.filter((item) => !manager || item.id === "cars" || item.id === "visits" || item.id === "requests");
+  const visibleNav = NAV.filter((item) => !manager || item.id === "cars" || item.id === "visits" || item.id === "requests" || item.id === "display");
 
   useEffect(() => {
     const active = navRef.current?.querySelector<HTMLElement>('[aria-current="page"]');

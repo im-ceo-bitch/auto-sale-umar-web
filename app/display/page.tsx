@@ -3,6 +3,8 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styles from "./display.module.css";
+import ShowroomScene from "./ShowroomScene";
+import { screenCode, showroomGet, showroomPost, emptyAssets, emptyMusic, type Screen, type Assets, type Music, type Scene } from "./showroom";
 
 type CarStatus = "in_stock" | "in_showroom" | "in_transit" | "made_to_order" | "reserved" | "sold" | "hidden";
 type Currency = "USD" | "UZS" | "EUR";
@@ -25,6 +27,8 @@ interface CatalogVariant {
   interiorColorName: string | null;
   interiorSwatch: string;
   photos: CatalogPhoto[];
+  interiorPhotos?: CatalogPhoto[];
+  detailPhotos?: CatalogPhoto[];
 }
 
 interface DisplayCar {
@@ -47,6 +51,8 @@ interface DisplayCar {
   seats: number | null;
   shortDescriptionRu: string;
   coverUrl: string | null;
+  isNewArrival?: boolean;
+  updatedAt?: string;
   variants?: CatalogVariant[];
 }
 
@@ -73,12 +79,12 @@ function getFullscreenElement(doc: FullscreenDocument): Element | null {
   return doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
 }
 
-const ROTATION_MS = 11_000;
-const CATALOG_REFRESH_MS = 5 * 60_000;
+const ROTATION_MS = 13_000;
+const CATALOG_REFRESH_MS = 60_000;
 const DISPLAY_CACHE_TTL_MS = 30 * 60_000;
 const INTRO_FALLBACK_MS = 9_000;
 const WELCOME_DURATION_MS = 5_200;
-const DISPLAY_CACHE_KEY = "asu:display:catalog:clean-v3";
+const DISPLAY_CACHE_KEY = "asu:display:catalog:v4";
 
 const STATUS_LABELS: Record<CarStatus, string> = {
   in_stock: "В НАЛИЧИИ",
@@ -205,6 +211,7 @@ function catalogSignature(cars: DisplayCar[]): string {
         car.id,
         car.slug,
         car.status,
+        car.updatedAt, car.isNewArrival, JSON.stringify(car.variants ?? []),
         car.price ?? "",
         car.currency,
         car.priceOnRequest ? 1 : 0,
@@ -272,6 +279,22 @@ export default function DisplayPage() {
   const [fullscreenSupported, setFullscreenSupported] = useState(false);
   const [fullscreenHint, setFullscreenHint] = useState<string | null>(null);
 
+  const [code,setCode] = useState("");
+  const [remote, setRemote] = useState<Screen|null>(null);
+  const [assets,setAssets] = useState<Assets>(emptyAssets);
+  const [music,setMusic] = useState<Music>(emptyMusic);
+  const [audioBlocked,setAudioBlocked] = useState(false);
+  const [trackIndex,setTrackIndex] = useState(0);
+  const [manualScene,setManualScene] = useState<Scene>("auto");
+  const [manualPhoto,setManualPhoto] = useState<number|null>(null);
+  const [sceneRevision,setSceneRevision] = useState("");
+  const [paused,setPaused] = useState(false);
+  const [autoInterior,setAutoInterior] = useState(false);
+  const [showPairing,setShowPairing] = useState(false);
+  const audioRef = useRef<HTMLAudioElement|null>(null);
+  const lastRevision = useRef("");
+  const missingRevision = useRef("");
+  const remoteRef = useRef<Screen|null>(null);
   const rootRef = useRef<HTMLElement | null>(null);
   const currentSlugRef = useRef<string | null>(null);
   const pendingIndexRef = useRef<number | null>(0);
@@ -314,9 +337,7 @@ export default function DisplayPage() {
   }, [cars, index]);
 
   useEffect(() => {
-    // TV Mode temporarily runs only the white collection. Keep the dark scene
-    // implementation intact so it can be re-enabled without rebuilding it.
-    setForcedSceneMode("light");
+    setForcedSceneMode(null);
     setSceneMode("light");
     setModeReady(true);
   }, []);
@@ -344,7 +365,7 @@ export default function DisplayPage() {
   useEffect(() => {
     const cached = readCatalogCache();
     if (!cached || cached.cars.length === 0) return;
-    setCars(cached.cars);
+    setCars(cached.cars.filter(c=>c.status!=="hidden"&&c.status!=="sold"));
     setError(false);
   }, []);
 
@@ -432,14 +453,14 @@ export default function DisplayPage() {
 
   const loadCars = useCallback(async () => {
     try {
-      const response = await fetch("/api/catalog?pageSize=100", { cache: "no-store" });
+      const response = await fetch("/api/catalog?pageSize=100&display=1", { cache: "no-store" });
       const payload = (await response.json()) as CatalogResponse;
       if (!response.ok || payload.success !== true || !Array.isArray(payload.cars)) {
         throw new Error("Catalog unavailable");
       }
 
       const active = payload.cars.filter((car) => car.status !== "hidden" && car.status !== "sold");
-      const nextCars = active.length > 0 ? active : payload.cars.filter((car) => car.status !== "hidden");
+      const nextCars = active;
 
       applyCars(nextCars);
       setCatalogLoaded(true);
@@ -523,7 +544,7 @@ export default function DisplayPage() {
   }, []);
 
   useEffect(() => {
-    if (!modeReady || cars.length === 0 || phase !== "loading") return;
+    if (!modeReady || (!catalogLoaded && cars.length === 0) || phase !== "loading") return;
 
     const nextMode = forcedSceneMode ?? "light";
     const elapsed = Date.now() - loadingStartedAtRef.current;
@@ -534,7 +555,7 @@ export default function DisplayPage() {
     }, remainingSplash);
 
     return () => window.clearTimeout(timer);
-  }, [cars.length, forcedSceneMode, index, modeReady, phase, startSequence]);
+  }, [cars.length, catalogLoaded, forcedSceneMode, index, modeReady, phase, startSequence]);
 
   useEffect(() => {
     if (phase !== "brand") return;
@@ -556,8 +577,10 @@ export default function DisplayPage() {
   }, [finishWelcome, phase]);
 
   useEffect(() => {
-    if (phase !== "catalog" || cars.length === 0) return;
+    if (phase !== "catalog" || cars.length === 0 || paused) return;
     const rotation = window.setTimeout(() => {
+      if (!autoInterior && cars[index]?.variants?.some(v=>v.interiorPhotos?.length)) {setAutoInterior(true); return;}
+      setAutoInterior(false);
       if (index >= cars.length - 1) {
         const nextMode = forcedSceneMode ?? (sceneMode === "dark" ? "light" : "dark");
         startSequence(nextMode, 0);
@@ -566,9 +589,34 @@ export default function DisplayPage() {
       setIndex((current) => clampIndex(current + 1, cars.length));
     }, ROTATION_MS);
     return () => window.clearTimeout(rotation);
-  }, [cars.length, forcedSceneMode, index, phase, sceneMode, startSequence]);
+  }, [cars, forcedSceneMode, index, phase, sceneMode, startSequence, paused, autoInterior]);
 
+  useEffect(()=>{try{setCode(screenCode());}catch{setShowPairing(true);}},[]);
+  useEffect(()=>{let stopped=false;let timer:number;const poll=async()=>{try{const next=await showroomGet<Assets>("assets=1");if(!stopped)setAssets(next);}catch{}finally{if(!stopped)timer=window.setTimeout(poll,30000);}};void poll();return()=>{stopped=true;clearTimeout(timer);};},[]);
+  useEffect(()=>{if(!code)return;let stopped=false;let timer:number;const poll=async()=>{try{const b=await showroomGet<{screen:Screen|null}>("code="+code);if(!stopped){setRemote(b.screen);remoteRef.current=b.screen;if(b.screen)setMusic(b.screen.music);}}catch{}finally{if(!stopped)timer=window.setTimeout(poll,2500);}};void poll();return()=>{stopped=true;clearTimeout(timer);};},[code]);
+  useEffect(()=>{if(!remote?.revision||lastRevision.current===remote.revision)return;const cmd=remote.command;if(!cmd.action)return;
+    const selected=cars.findIndex(c=>c.id===cmd.carId);if(!["auto","pause"].includes(cmd.action)&&selected<0){if(missingRevision.current!==remote.revision){missingRevision.current=remote.revision;void loadCars();}return;}
+    lastRevision.current=remote.revision; void showroomGet<Assets>("assets=1").then(setAssets).catch(()=>{}); if(cmd.theme&&cmd.action!=="pause"){setSceneMode(cmd.theme);setForcedSceneMode(cmd.theme);}
+    if(cmd.action==="auto"){setPaused(false);setManualScene("auto");setManualPhoto(null);setAutoInterior(false);setPhase("catalog");return;}
+    setPaused(true);if(cmd.action==="pause"){if(phase!=="catalog")setPhase("catalog");return;}
+    setIndex(selected);setSceneRevision(remote.revision);setManualScene(cmd.action);setManualPhoto(cmd.photoId??null);setAutoInterior(false);setPhase("catalog");
+  },[remote,cars,phase,loadCars]);
+  useEffect(()=>{if(!paused||manualScene==="auto"||manualScene==="pause")return;const cid=remote?.command.carId;if(cid&&!cars.some(c=>c.id===cid)){setPaused(false);setManualScene("auto");setManualPhoto(null);setAutoInterior(false);}},[cars,paused,manualScene,remote]);
   const car = cars[index] ?? null;
+  const chosenPhoto=car?.variants?.flatMap(v=>[...v.photos,...(v.interiorPhotos??[]),...(v.detailPhotos??[])]).find(p=>p.id===manualPhoto);
+  const firstInterior=car?.variants?.flatMap(v=>v.interiorPhotos??[])[0];
+  const firstDetail=car?.variants?.flatMap(v=>v.detailPhotos??[])[0];
+  const editorialKind: "car"|"interior"|"arrival"|"pending"|"detail"|null=manualScene!=="auto"&&manualScene!=="pause"?manualScene: autoInterior&&firstInterior?"interior":car?.status==="reserved"?"pending":car?.isNewArrival&&(car.status==="in_stock"||car.status==="in_showroom")?"arrival":null;
+  const editorialPhoto=chosenPhoto??(editorialKind==="interior"?firstInterior:editorialKind==="detail"?firstDetail:undefined);
+  const currentPhotoId=editorialPhoto?.id??(car?(editorialKind==="arrival"||sceneMode==="dark"?primaryPhoto(car):secondChainPhoto(car))?.id:null)??null;
+  const currentStatus=useRef({carId:car?.id??null,photoId:currentPhotoId,scene:editorialKind??phase});
+  currentStatus.current={carId:car?.id??null,photoId:currentPhotoId,scene:editorialKind??phase};
+  useEffect(()=>{if(!code)return;const heartbeat=()=>{if(remoteRef.current)void showroomPost({code,action:"heartbeat",...currentStatus.current}).catch(()=>{});};heartbeat();const t=window.setInterval(heartbeat,12000);return()=>clearInterval(t);},[code]);
+  useEffect(()=>{const n=assets.tracks.findIndex(t=>t.id===music.trackId);setTrackIndex(n<0?0:n);},[music.trackId,assets.tracks.map(t=>t.id).join(",")]);
+  const track=assets.tracks[trackIndex];
+  const trackUrl=track&&code?`${track.url}&code=${code}`:undefined;
+  useEffect(()=>{const audio=audioRef.current;if(!audio)return;audio.volume=music.volume;if(!music.playing||!trackUrl){audio.pause();setAudioBlocked(false);return;}void audio.play().then(()=>setAudioBlocked(false)).catch(()=>setAudioBlocked(true));},[trackUrl,music.playing,music.volume]);
+
   const counter = useMemo(() => {
     if (!car || cars.length === 0) return "00 / 00";
     return `${pad(index + 1)} / ${pad(cars.length)}`;
@@ -584,6 +632,10 @@ export default function DisplayPage() {
 
   return (
     <main ref={rootRef} className={styles.displayRoot} data-scene-mode={sceneMode}>
+      <audio ref={audioRef} src={trackUrl} preload="none" onEnded={()=>{if(assets.tracks.length>1)setTrackIndex(i=>(i+1)%assets.tracks.length);else if(music.playing&&audioRef.current){audioRef.current.currentTime=0;void audioRef.current.play().catch(()=>setAudioBlocked(true));}}}/>
+      {audioBlocked&&<button className={styles.audioUnlock} onClick={()=>void audioRef.current?.play().then(()=>setAudioBlocked(false)).catch(()=>setAudioBlocked(true))}>Включить звук</button>}
+      <button className={styles.pairToggle} onClick={()=>setShowPairing(v=>!v)} aria-label="Подключить пульт">TV · {remote?"REMOTE":"PAIR"}</button>
+      {showPairing&&<div className={styles.pairPanel}><strong>Showroom Remote</strong><span>Введите код в приложении или админ-панели</span><b>{code||"Нет доступа к хранилищу"}</b><span>{remote?"Подключено":"Ожидание подключения"}</span><button onClick={()=>setShowPairing(false)}>Закрыть</button><button onClick={()=>void toggleFullscreen()}>Полный экран</button></div>}
       <div className={styles.texture} aria-hidden="true" />
       <div className={styles.ambientGlow} aria-hidden="true" />
 
@@ -646,6 +698,10 @@ export default function DisplayPage() {
             <div className={styles.loadingCopyLight}>
               <strong>{error ? "ОБНОВЛЯЕМ КОЛЛЕКЦИЮ" : catalogLoaded ? "КОЛЛЕКЦИЯ СКОРО ПОЯВИТСЯ" : "ЗАГРУЖАЕМ КОЛЛЕКЦИЮ"}</strong>
             </div>
+          </motion.section>
+        ) : editorialKind && car ? (
+          <motion.section className={styles.scene} key={`editorial-${car.id}-${editorialKind}-${editorialPhoto?.id??0}-${sceneMode}-${manualScene!=="auto"?sceneRevision:"auto"}`} initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:.65}}>
+            <ShowroomScene kind={editorialKind} image={editorialPhoto?.url??(editorialKind==="arrival"?carImage(car):image)} cover={assets.covers.find(c=>c.carId===car.id)?.url} name={`${car.brand} ${car.model}`} price={formatPrice(car)} specs={[car.year,car.trim,car.engineText,normalizeDrive(car.driveType)].filter(Boolean).join(" · ")} theme={sceneMode} status={STATUS_LABELS[car.status]}/>
           </motion.section>
         ) : sceneMode === "dark" ? (
           <motion.section

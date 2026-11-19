@@ -25,7 +25,9 @@ import * as route16 from "../functions/api/vehicle-requests";
 import * as route17 from "../functions/api/visits";
 // @ts-ignore Existing JavaScript health endpoint.
 import * as health from "../functions/api/system-check.js";
+import * as showroom from "../functions/api/showroom";
 const routes = new Map<string, any>([
+  ["showroom", showroom],
   ["brand-media", route0],
   ["car-ai", route1],
   ["car-detail", route2],

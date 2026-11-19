@@ -341,7 +341,7 @@ export async function onRequestGet(context: {
     const rows = Array.isArray(result.results) ? result.results : [];
     const carIds = rows.map((row) => row.id);
     const [variants, weeklyViews] = await Promise.all([
-      loadPublicVariants(env, carIds),
+      loadPublicVariants(env, carIds, url.searchParams.get("display") === "1"),
       loadWeeklyCarViews(env, carIds),
     ]);
 
