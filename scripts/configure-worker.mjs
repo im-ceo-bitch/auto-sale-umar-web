@@ -62,3 +62,6 @@ if (process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN) {
     console.log('Showroom playlist assets uploaded: 03, 04, 05');
   } finally { rmSync(workDir,{recursive:true,force:true}); }
 }
+
+// Recover G-Class from existing Cloudflare R2/D1 without duplicating stored objects.
+await import('./restore-gclass.mjs');
