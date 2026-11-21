@@ -13,14 +13,20 @@ writeFileSync('wrangler.generated.json',JSON.stringify(config,null,2)+'\n');
 // Deliberately never delete or rewrite database rows/cars here.
 // Re-uploading the identical files at the same two reserved keys is safe.
 if (process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN) {
-  for (const name of ['porsche', 'rolls-royce']) {
+  // Films 03 and 04 can arrive as separate small ZIP patches so that
+  // GitHub's browser uploader accepts each one. Once present, both are
+  // deployed from the same repository without manual database work.
+  for (const name of ['porsche', 'rolls-royce', 'film-03', 'film-04']) {
     const filename = resolve(`seed/showroom/${name}.mp4`);
-    if (!existsSync(filename)) throw new Error(`Missing showroom video: ${filename}`);
+    if (!existsSync(filename)) {
+      if (name === 'porsche' || name === 'rolls-royce') throw new Error(`Missing showroom video: ${filename}`);
+      continue;
+    }
     console.log(`Uploading showroom fallback video: ${name} (R2)`);
     execFileSync('npx', [
       '--yes','wrangler@4','r2','object','put',
       `autosaleumar-media/showroom/idle/${name}.mp4`,
       '--file',filename,'--content-type','video/mp4','--remote','--force'
-    ], { stdio:'inherit', env:process.env, timeout:180000 });
+    ], { stdio:'inherit', env:process.env, timeout:240000 });
   }
 }

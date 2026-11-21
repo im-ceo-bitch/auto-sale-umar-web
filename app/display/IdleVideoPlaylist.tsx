@@ -40,6 +40,9 @@ export default function IdleVideoPlaylist({videos,paused}:{videos:IdleVideo[];pa
   },[current,failed.length,videos.length,advance]);
   return (
     <div className={styles.stage} aria-label="Видеопрезентация Auto Sale Umar">
+      <div className={styles.brandMark} aria-label="Auto Sale Umar">
+        <img src="/brand/asu-wordmark-white.png" alt="Auto Sale Umar" />
+      </div>
       {current && !unplayable ? (
         <AnimatePresence mode="sync" initial={false}>
           <motion.video key={current.id} ref={player} className={styles.film}
