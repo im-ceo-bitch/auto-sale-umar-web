@@ -636,7 +636,7 @@ export default function DisplayPage() {
     <main ref={rootRef} className={styles.displayRoot} data-scene-mode={sceneMode}>
       <audio ref={audioRef} src={trackUrl} preload="none" onEnded={()=>{if(assets.tracks.length>1)setTrackIndex(i=>(i+1)%assets.tracks.length);else if(music.playing&&audioRef.current){audioRef.current.currentTime=0;void audioRef.current.play().catch(()=>setAudioBlocked(true));}}}/>
       {audioBlocked&&<button className={styles.audioUnlock} onClick={()=>void audioRef.current?.play().then(()=>setAudioBlocked(false)).catch(()=>setAudioBlocked(true))}>Включить звук</button>}
-      <button className={styles.pairToggle} onClick={()=>setShowPairing(v=>!v)} aria-label="Подключить пульт">TV · {remote?"REMOTE":"PAIR"}</button>
+      <button className={styles.pairToggle} data-idle={phase === "catalog" && !car && assets.idleVideos.length > 0 ? "true" : "false"} onClick={()=>setShowPairing(v=>!v)} aria-label="Подключить пульт">TV · {remote?"REMOTE":"PAIR"}</button>
       {showPairing&&<div className={styles.pairPanel}><strong>Showroom Remote</strong><span>Введите код в приложении или админ-панели</span><b>{code||"Нет доступа к хранилищу"}</b><span>{remote?"Подключено":"Ожидание подключения"}</span><button onClick={()=>setShowPairing(false)}>Закрыть</button><button onClick={()=>void toggleFullscreen()}>Полный экран</button></div>}
       <div className={styles.texture} aria-hidden="true" />
       <div className={styles.ambientGlow} aria-hidden="true" />
@@ -689,8 +689,8 @@ export default function DisplayPage() {
             <motion.img src="/brand/asu-wordmark-white.png" alt="Auto Sale Umar" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6, duration: 0.8 }} />
           </motion.section>
         ) : phase === "catalog" && !car && assets.idleVideos.length > 0 ? (
-          <motion.section key="idle-films" className={styles.scene} initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:.7}}>
-            <IdleVideoPlaylist videos={assets.idleVideos} paused={paused}/>
+          <motion.section key="idle-films" className={styles.idleFilmScene} initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:.7}}>
+            <IdleVideoPlaylist videos={assets.idleVideos} paused={paused} isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen}/>
           </motion.section>
         ) : phase === "loading" || !car ? (
           <motion.section

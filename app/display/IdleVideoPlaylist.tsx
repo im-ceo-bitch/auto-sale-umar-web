@@ -5,8 +5,18 @@ import {useCallback, useEffect, useRef, useState} from "react";
 import type {IdleVideo} from "./showroom";
 import styles from "./idle-video.module.css";
 
-/** A silent-autoplay TV playlist; sound can be enabled by a real user gesture. */
-export default function IdleVideoPlaylist({videos,paused}:{videos:IdleVideo[];paused:boolean}) {
+/** A silent-autoplay TV playlist; sound and fullscreen require a real user gesture. */
+export default function IdleVideoPlaylist({
+  videos,
+  paused,
+  isFullscreen,
+  onToggleFullscreen,
+}:{
+  videos: IdleVideo[];
+  paused: boolean;
+  isFullscreen: boolean;
+  onToggleFullscreen: () => void | Promise<void>;
+}) {
   const [index,setIndex] = useState(0);
   const [muted,setMuted] = useState(true);
   const [blocked,setBlocked] = useState(false);
@@ -55,7 +65,44 @@ export default function IdleVideoPlaylist({videos,paused}:{videos:IdleVideo[];pa
         <div className={styles.waiting}><img src="/brand/asu-wordmark-white.png" alt="Auto Sale Umar"/><span>СКОРО В НАШЕМ ШОУРУМЕ</span></div>
       )}
       {blocked&&current&&!unplayable&&!paused&&<button className={styles.start} type="button" onClick={()=>{const v=player.current;if(!v)return;v.muted=true;setMuted(true);void v.play().then(()=>setBlocked(false)).catch(()=>setBlocked(true));}}>▶ НАЧАТЬ ПОКАЗ</button>}
-      {current&&!unplayable&&<button className={styles.sound} type="button" onClick={()=>{const next=!muted;setMuted(next);if(player.current){player.current.muted=next;void player.current.play().catch(()=>{});}}} aria-label={muted?'Включить звук видео':'Выключить звук видео'}>{muted?'ЗВУК ВЫКЛ.':'ЗВУК ВКЛ.'}</button>}
+      {current && !unplayable && (
+        <div className={styles.videoControls} aria-label="Управление видеопоказом">
+          <button
+            className={styles.control}
+            type="button"
+            onClick={()=>{
+              const next = !muted;
+              setMuted(next);
+              const video = player.current;
+              if (video) { video.muted = next; void video.play().catch(()=>{}); }
+            }}
+            aria-label={muted ? "Включить звук видео" : "Выключить звук видео"}
+            aria-pressed={!muted}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M11 5 6 9H3v6h3l5 4V5Z" />
+              {muted ? <path d="m16 9 5 6m0-6-5 6" /> : <><path d="M15 9a5 5 0 0 1 0 6" /><path d="M18 6a9 9 0 0 1 0 12" /></>}
+            </svg>
+            <span>{muted ? "ЗВУК ВЫКЛ." : "ЗВУК ВКЛ."}</span>
+          </button>
+          <button
+            className={styles.control}
+            type="button"
+            onClick={()=>void onToggleFullscreen()}
+            aria-label={isFullscreen ? "Выйти из полноэкранного режима" : "Открыть видео на весь экран"}
+            aria-pressed={isFullscreen}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              {isFullscreen ? (
+                <path d="M8 3v5H3m13-5v5h5M3 16h5v5m13-5h-5v5" />
+              ) : (
+                <path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v-5h-5" />
+              )}
+            </svg>
+            <span>{isFullscreen ? "СВЕРНУТЬ" : "ПОЛНЫЙ ЭКРАН"}</span>
+          </button>
+        </div>
+      )}
       {unplayable&&<button type="button" className={styles.retry} onClick={()=>{setFailed([]);setIndex(0);}}>ПОВТОРИТЬ</button>}
     </div>
   );
