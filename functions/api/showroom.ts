@@ -5,23 +5,25 @@ const validCode = (s: unknown): s is string => typeof s === 'string' && /^[A-F0-
 const positive = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n > 0;
 const mediaURL = (key: string) => `/api/showroom?media=${encodeURIComponent(key)}`;
 async function assets(env: Context['env']) {
-  const [covers, tracks] = await Promise.all([
+  const [covers, tracks, videos] = await Promise.all([
     (env.DB.prepare(`SELECT r.car_id AS carId,r.object_key AS key FROM showroom_reveals r JOIN cars c ON c.id=r.car_id WHERE c.is_published=1 AND c.status<>'hidden'`) as any).all(),
-    (env.DB.prepare('SELECT id,title,object_key AS key FROM showroom_tracks ORDER BY title,id') as any).all()
+    (env.DB.prepare('SELECT id,title,object_key AS key FROM showroom_tracks ORDER BY title,id') as any).all(),
+    (env.DB.prepare('SELECT id,title,object_key AS key FROM showroom_idle_videos WHERE enabled=1 ORDER BY sort_order,id') as any).all()
   ]);
-  return {covers: (covers.results || []).map((r:any)=>({carId:r.carId,url:mediaURL(r.key)})), tracks:(tracks.results || []).map((r:any)=>({id:r.id,title:r.title,url:mediaURL(r.key)}))};
+  return {covers: (covers.results || []).map((r:any)=>({carId:r.carId,url:mediaURL(r.key)})), tracks:(tracks.results || []).map((r:any)=>({id:r.id,title:r.title,url:mediaURL(r.key)})), idleVideos:(videos.results || []).map((r:any)=>({id:r.id,title:r.title,url:mediaURL(r.key)}))};
 }
 export async function onRequestGet({request,env}: Context) {
  const u = new URL(request.url); const key=u.searchParams.get('media');
  if(key) {
-  if(!/^showroom\/(reveal|audio)\/[a-f0-9-]+\.(png|jpg|webp|mp3|m4a|ogg)$/.test(key)) return new Response(null,{status:404});
+  if(!(/^showroom\/(reveal|audio)\/[a-f0-9-]+\.(png|jpg|webp|mp3|m4a|ogg)$/.test(key) || /^showroom\/idle\/[a-z0-9-]+\.mp4$/.test(key))) return new Response(null,{status:404});
+  if(key.startsWith('showroom/idle/') && !await env.DB.prepare('SELECT id FROM showroom_idle_videos WHERE object_key=?1 AND enabled=1').bind(key).first()) return new Response(null,{status:404});
   if(key.startsWith('showroom/audio/')) {
    const code=u.searchParams.get('code');
    if(!validCode(code)||!await env.DB.prepare('SELECT code FROM showroom_screens WHERE code=?1').bind(code).first()) return new Response(null,{status:403});
   }
   const range=request.headers.get('range');
   const object=await env.MEDIA.get(key,range?{range:request.headers}:undefined); if(!object) return new Response(null,{status:404});
-  const h=new Headers({'cache-control':'public, max-age=86400','x-content-type-options':'nosniff'}); object.writeHttpMetadata(h); h.set('accept-ranges','bytes');if(key.startsWith('showroom/audio/'))h.set('cache-control','private, no-store');if(range&&object.range&&typeof object.range.offset==='number'&&typeof object.range.length==='number'){const {offset,length}=object.range;h.set('content-range',`bytes ${offset}-${offset+length-1}/${object.size}`);h.set('content-length',String(length));return new Response(object.body,{status:206,headers:h});}h.set('content-length',String(object.size));return new Response(object.body,{headers:h});
+  const h=new Headers({'cache-control':'public, max-age=86400','x-content-type-options':'nosniff'}); object.writeHttpMetadata(h); if(key.startsWith('showroom/idle/'))h.set('content-type','video/mp4'); h.set('etag',object.httpEtag); h.set('accept-ranges','bytes');if(key.startsWith('showroom/audio/'))h.set('cache-control','private, no-store');if(range&&object.range&&typeof object.range.offset==='number'&&typeof object.range.length==='number'){const {offset,length}=object.range;h.set('content-range',`bytes ${offset}-${offset+length-1}/${object.size}`);h.set('content-length',String(length));return new Response(object.body,{status:206,headers:h});}h.set('content-length',String(object.size));return new Response(object.body,{headers:h});
  }
  if(u.searchParams.has('assets')) return reply({success:true,...await assets(env)});
  const code=u.searchParams.get('code'); if(!validCode(code)) return reply({success:false,error:'Неверный код экрана'},400);

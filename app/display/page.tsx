@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styles from "./display.module.css";
 import ShowroomScene from "./ShowroomScene";
+import IdleVideoPlaylist from "./IdleVideoPlaylist";
 import { screenCode, showroomGet, showroomPost, emptyAssets, emptyMusic, type Screen, type Assets, type Music, type Scene } from "./showroom";
 
 type CarStatus = "in_stock" | "in_showroom" | "in_transit" | "made_to_order" | "reserved" | "sold" | "hidden";
@@ -447,7 +448,8 @@ export default function DisplayPage() {
       });
     } else {
       setIndex(0);
-      setPhase("loading");
+      // Do not restart the welcome animation every minute when the catalog is empty.
+      // The R2 video playlist remains visible until the first car is published.
     }
   }, []);
 
@@ -544,7 +546,7 @@ export default function DisplayPage() {
   }, []);
 
   useEffect(() => {
-    if (!modeReady || (!catalogLoaded && cars.length === 0) || phase !== "loading") return;
+    if (!modeReady || (!catalogLoaded && cars.length === 0 && assets.idleVideos.length === 0) || phase !== "loading") return;
 
     const nextMode = forcedSceneMode ?? "light";
     const elapsed = Date.now() - loadingStartedAtRef.current;
@@ -555,7 +557,7 @@ export default function DisplayPage() {
     }, remainingSplash);
 
     return () => window.clearTimeout(timer);
-  }, [cars.length, catalogLoaded, forcedSceneMode, index, modeReady, phase, startSequence]);
+  }, [cars.length, catalogLoaded, assets.idleVideos.length, forcedSceneMode, index, modeReady, phase, startSequence]);
 
   useEffect(() => {
     if (phase !== "brand") return;
@@ -685,6 +687,10 @@ export default function DisplayPage() {
               <span>ДОБРО ПОЖАЛОВАТЬ</span><strong>В ШОУРУМ</strong>
             </motion.div>
             <motion.img src="/brand/asu-wordmark-white.png" alt="Auto Sale Umar" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6, duration: 0.8 }} />
+          </motion.section>
+        ) : phase === "catalog" && !car && assets.idleVideos.length > 0 ? (
+          <motion.section key="idle-films" className={styles.scene} initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:.7}}>
+            <IdleVideoPlaylist videos={assets.idleVideos} paused={paused}/>
           </motion.section>
         ) : phase === "loading" || !car ? (
           <motion.section
