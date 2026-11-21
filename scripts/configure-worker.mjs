@@ -8,25 +8,57 @@ const config={name:'autosaleumar-backend',main:'backend/worker.ts',compatibility
 if(prod) config.routes=['autosaleumar.com','www.autosaleumar.com','api.autosaleumar.com','display.autosaleumar.com'].map(pattern=>({pattern,custom_domain:true}));
 writeFileSync('wrangler.generated.json',JSON.stringify(config,null,2)+'\n');
 
-// The existing Deploy Showroom Backend workflow invokes this script after
-// provisioning D1 and R2. Seed the two user-provided films into R2 automatically.
-// Deliberately never delete or rewrite database rows/cars here.
-// Re-uploading the identical files at the same two reserved keys is safe.
+// Preserve the established single-Worker workflow and seed only active videos.
+// Film 05 is split into four binary chunks in GitHub to fit the web uploader;
+// all chunks are reassembled into a byte-identical MP4 before uploading to R2.
+// No transcoding or image-quality degradation occurs here.
 if (process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN) {
-  // Films 03 and 04 can arrive as separate small ZIP patches so that
-  // GitHub's browser uploader accepts each one. Once present, both are
-  // deployed from the same repository without manual database work.
-  for (const name of ['porsche', 'rolls-royce', 'film-03', 'film-04']) {
-    const filename = resolve(`seed/showroom/${name}.mp4`);
-    if (!existsSync(filename)) {
-      if (name === 'porsche' || name === 'rolls-royce') throw new Error(`Missing showroom video: ${filename}`);
-      continue;
-    }
-    console.log(`Uploading showroom fallback video: ${name} (R2)`);
-    execFileSync('npx', [
-      '--yes','wrangler@4','r2','object','put',
-      `autosaleumar-media/showroom/idle/${name}.mp4`,
-      '--file',filename,'--content-type','video/mp4','--remote','--force'
-    ], { stdio:'inherit', env:process.env, timeout:240000 });
+  const { createHash } = await import('node:crypto');
+  const { openSync, readSync, writeSync, closeSync, mkdtempSync, rmSync, statSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const films = ['film-03','film-04'];
+  const chunkDir = resolve('seed/showroom/film-05.parts');
+  const chunks = [1,2,3,4].map(i => resolve(chunkDir, `part-${String(i).padStart(2,'0')}.bin`));
+  if (chunks.some(p => !existsSync(p))) {
+    throw new Error('Missing film-05 chunks. Install patches 01, 02, 03, 04 in order before deploying.');
   }
+  const workDir = mkdtempSync(join(tmpdir(), 'asu-film-05-'));
+  try {
+    const destination = join(workDir,'film-05.mp4');
+    const out = openSync(destination,'w');
+    const digest = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let bytes = 0;
+    try {
+      for (const part of chunks) {
+        const input = openSync(part,'r');
+        try {
+          let n;
+          while ((n = readSync(input,buffer,0,buffer.length,null)) > 0) {
+            digest.update(buffer.subarray(0,n));
+            let pos = 0;
+            while (pos < n) pos += writeSync(out,buffer,pos,n-pos);
+            bytes += n;
+          }
+        } finally { closeSync(input); }
+      }
+    } finally { closeSync(out); }
+    const expectedHash = '28434693ab7fa18fce0b6b76174ebad172fc1d7ece2cc536185ff43739c67e6c';
+    if (bytes !== 82152830 || digest.digest('hex') !== expectedHash || statSync(destination).size !== bytes) {
+      throw new Error('Film 05 checksum mismatch. Rejecting incomplete or altered movie.');
+    }
+    films.push('film-05');
+    for (const name of films) {
+      const filename = name === 'film-05' ? destination : resolve(`seed/showroom/${name}.mp4`);
+      if (!existsSync(filename)) throw new Error(`Missing showroom video: ${filename}`);
+      console.log(`Uploading showroom video ${name} to R2`);
+      execFileSync('npx', [
+        '--yes','wrangler@4','r2','object','put',
+        `autosaleumar-media/showroom/idle/${name}.mp4`,
+        '--file',filename,'--content-type','video/mp4','--remote','--force'
+      ], { stdio:'inherit', env:process.env, timeout:600000 });
+    }
+    console.log('Showroom playlist assets uploaded: 03, 04, 05');
+  } finally { rmSync(workDir,{recursive:true,force:true}); }
 }
